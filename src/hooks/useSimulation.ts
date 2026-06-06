@@ -73,7 +73,7 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
   const [simulation, setSimulation] = useState(() =>
     makeInitialState(scenario, bmsConfig, cellConfig),
   )
-  const [running, setRunning] = useState(true)
+  const [running, setRunning] = useState(false)
   const [totalKm, setTotalKm] = useState(0)
   const [tripKm, setTripKm] = useState(0)
   const [estimatedRemainingKm, setEstimatedRemainingKm] = useState<number | null>(null)
