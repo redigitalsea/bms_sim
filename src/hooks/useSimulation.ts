@@ -96,6 +96,8 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
     tick: 0,
     lastDisplayedTick: -1,
     estimatedRemainingKm: null as number | null,
+    pendingSnapshot: null as Snapshot | null,
+    pendingElapsedSec: null as number | null,
   })
 
   const dataCollector = useRef(new DataCollector())
@@ -104,6 +106,7 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
   const cellConfigRef = useRef(cellConfig)
   const engineConfigRef = useRef(engineConfig)
   const terrainDataRef = useRef(terrainData)
+  const terrainConfigRef = useRef(terrainConfig)
 
   // 保持 ref 同步
   useEffect(() => { scenarioRef.current = scenario }, [scenario])
@@ -111,6 +114,7 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
   useEffect(() => { cellConfigRef.current = cellConfig }, [cellConfig])
   useEffect(() => { engineConfigRef.current = engineConfig }, [engineConfig])
   useEffect(() => { terrainDataRef.current = terrainData }, [terrainData])
+  useEffect(() => { terrainConfigRef.current = terrainConfig }, [terrainConfig])
 
   // ── 参数变化时的预览更新 ──
   useEffect(() => {
@@ -150,9 +154,10 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
       const _cell = cellConfigRef.current
       const _scenario = scenarioRef.current
       const _terrain = terrainDataRef.current
+      const _terrainCfg = terrainConfigRef.current
 
-      // 当前帧要推进多少个物理步
-      const stepsToAdvance = Math.floor(frameDt / stepSec)
+      // 当前帧要推进多少个物理步（至少 1 步，防止第一帧 frameDt≈0 导致卡死）
+      const stepsToAdvance = Math.max(1, Math.floor(frameDt / stepSec))
       const bmsIntervalMs = (1000 / _bms.samplingRate)
 
       for (let i = 0; i < stepsToAdvance; i++) {
@@ -175,11 +180,10 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
           demandPower = IDLE_POWER
           currentSpeed = 0
         } else {
-          currentSpeed = terrainConfig.averageSpeedKmh
+          currentSpeed = _terrainCfg.averageSpeedKmh
           // 基础功率 = 目标功率 × 油门
           const basePower = _scenario.targetPower * (_scenario.throttle / 100)
           // 坡度附加功率：P_slope = m * g * sin(θ) * v * 系数
-          // slope 是百分比，sin(θ) ≈ slope/100（小角度近似）
           const slopeRad = Math.atan(slope / 100)
           const slopePower = VEHICLE_MASS_KG * GRAVITY * Math.sin(slopeRad) * (currentSpeed / 3.6) * WHEELBASE_POWER_FACTOR
           demandPower = basePower + slopePower
@@ -217,47 +221,35 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
           estimatedRemainingKm: state.estimatedRemainingKm,
         })
 
-        // ── BMS 采样周期到达时更新 UI ──
+        // ── BMS 采样周期到达时：保存快照并在循环外刷新 UI ──
         const bmsTick = Math.floor(state.elapsedMs / bmsIntervalMs)
         if (bmsTick > state.lastDisplayedTick) {
           state.lastDisplayedTick = bmsTick
-          // 此处不直接 setState，在下面统一刷新
+          state.pendingSnapshot = snapshot
+          state.pendingElapsedSec = state.elapsedMs / 1000
         }
       }
 
       // ── UI 刷新：仅在有新 BMS 采样时 setState ──
-      const state2 = engineState.current
-      if (state2.lastDisplayedTick >= 0) {
-        const elapsedSec = state2.elapsedMs / 1000
-        const snapshot = createSnapshot(
-          state2.soc,
-          1 / bmsConfigRef.current.samplingRate,
-          scenarioRef.current,
-          bmsConfigRef.current,
-          cellConfigRef.current,
-          queryTerrainAtDistance(terrainDataRef.current, state2.totalKm).slope === 0
-            ? undefined
-            : (() => {
-                const s = queryTerrainAtDistance(terrainDataRef.current, state2.totalKm).slope
-                const v = terrainConfig.averageSpeedKmh
-                const base = scenarioRef.current.targetPower * (scenarioRef.current.throttle / 100)
-                const slopeP = VEHICLE_MASS_KG * GRAVITY * Math.sin(Math.atan(s / 100)) * (v / 3.6) * WHEELBASE_POWER_FACTOR
-                return base + slopeP
-              })(),
-        )
+      if (state.pendingSnapshot) {
+        const snap = state.pendingSnapshot
+        const elapsedSec = state.pendingElapsedSec!
 
         setSimulation({
-          tick: state2.tick,
+          tick: state.tick,
           elapsedSeconds: elapsedSec,
-          snapshot,
+          snapshot: snap,
           history: [
-            makeRecord(state2.tick, snapshot, elapsedSec),
+            makeRecord(state.tick, snap, elapsedSec),
           ].slice(0, HISTORY_LIMIT),
         })
 
-        setTotalKm(state2.totalKm)
-        setTripKm(state2.tripKm)
-        setEstimatedRemainingKm(state2.estimatedRemainingKm)
+        setTotalKm(state.totalKm)
+        setTripKm(state.tripKm)
+        setEstimatedRemainingKm(state.estimatedRemainingKm)
+
+        state.pendingSnapshot = null
+        state.pendingElapsedSec = null
       }
 
       animFrameId = requestAnimationFrame(loop)
@@ -278,6 +270,8 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
       tick: 0,
       lastDisplayedTick: -1,
       estimatedRemainingKm: null,
+      pendingSnapshot: null,
+      pendingElapsedSec: null,
     }
     dataCollector.current.clear()
     setTotalKm(0)
@@ -297,6 +291,8 @@ export function useSimulation(options: UseSimulationOptions): UseSimulationRetur
       tick: 0,
       lastDisplayedTick: -1,
       estimatedRemainingKm: null,
+      pendingSnapshot: null,
+      pendingElapsedSec: null,
     }
     dataCollector.current.clear()
     setTotalKm(0)
